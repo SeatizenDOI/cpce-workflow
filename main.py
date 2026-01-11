@@ -1,18 +1,20 @@
 import torch
+from tqdm import tqdm
 import torch.nn as nn
 import random
 import numpy as np
 import json
 from pathlib import Path
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from huggingface_hub import snapshot_download
 from transformers import AutoImageProcessor, Dinov2ForImageClassification, Dinov2Config
 
 
-IMAGE_FOLDER = Path("dataset/test_folder")
-CSV_FOLDER_OUTPUT = Path("csv/model_output")
+IMAGE_FOLDER = Path("/media/bioeos/plancha_drive_2/photos13")
+IMAGE_FOLDER_OUTPUT = Path("output_cpce_inference")
+
 CPCE_GRID = 7
-MODEL_NAME = "groderg/Aina-large-2024_10_23-batch-size32_freeze_monolabel"
+MODEL_NAME = "groderg/Kamoulox-large-2024_10_31-batch-size64_freeze_monolabel"
 PATH_TO_MONOLABEL_DIRECTORY = "models/monolabel"
 
 def getDynoConfig(repo_name):
@@ -29,7 +31,7 @@ def getDynoConfig(repo_name):
 class NewHeadDinoV2ForImageClassification(Dinov2ForImageClassification):
     def __init__(self, config: Dinov2Config) -> None:
         super().__init__(config)
-
+ 
         # Classifier head
         self.classifier = self.create_head(config.hidden_size * 2, config.num_labels)
     
@@ -84,19 +86,27 @@ class MonolabelModel():
         class_name = self.classes_name[list(scores).index(best_score)]
         return class_name
 
-def vizualize(im: Image, centers: list | dict, colors: dict | None):
+def vizualize(im: Image, centers: list | dict, colors: dict | None, name:str):
 
     im_draw = ImageDraw.Draw(im)
-
+    w, h = im.size
+    font = ImageFont.load_default()
+    font_size = int(w / 50)  # Adjust the denominator for larger or smaller text
+    try:
+        font = ImageFont.truetype("Arial.ttf", font_size)
+    except IOError:
+        font = ImageFont.load_default() 
     if isinstance(centers, list):
         for center in centers:
-            im_draw.circle(center, 5, fill=(255,255,255))
+            im_draw.circle(center, w / 100, fill=(255,255,255))
     elif isinstance(centers, dict):
-        for center in centers:
-            color = colors.get(centers.get(center), (255,255,255)) if colors else (255,255,255)
-            im_draw.circle(center, 5, fill=color)
+        for center, label in centers.items():
+            color = colors.get(label, (255,255,255)) if colors else (255,255,255)
+            im_draw.circle(center, w / 100, fill=color)
+            im_draw.text((center[0] + 10, center[1] - 10), str(label), fill=(0,0,0), font=font)
     
-    im.show()
+    
+    im.save(Path(IMAGE_FOLDER_OUTPUT, name))
 
 def generate_centers(width: int, height: int) -> list[tuple[float, float]]:
     if CPCE_GRID == 1:
@@ -146,14 +156,39 @@ def load_images_from_folder(images_folder: Path) -> list[Path]:
     
     return list_images
 
+def create_cpc_file(cpce_file: Path, im: Image, img_name: Path, centers_with_pred: dict):
+
+    h, w = im.size
+    ratio = 15
+    h, w = h * ratio, w * ratio
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    with open(cpce_file, "w") as file:
+        # Write Path
+        file.write(f'"F:\\amoros_workflow\\CPCe_benthic_codes_41_Madagascar_MPAv4_40.txt","..\\photos\\{img_name.name}",{h},{w},{h},{w}\r\n')
+
+        # Write 
+        file.write(f'0,{h}\r\n')
+        file.write(f'{w},{h}\r\n')
+        file.write(f'{w},0\r\n')
+        file.write(f'0,0\r\n')
+        file.write("49\r\n")
+
+        for x, y in list(centers_with_pred.keys()):
+            file.write(f'{x * ratio},{y * ratio}\r\n')
+        
+        for i, pred in enumerate(list(centers_with_pred.values())):
+            file.write(f'"{alphabet[i]}","{pred}","Notes",""\r\n')
+        
+        for _ in range(28):
+            file.write('" "\r\n')
 
 def main():
     # Get images
     list_images = load_images_from_folder(IMAGE_FOLDER)
 
     model_manager = MonolabelModel(MODEL_NAME, batch_size=1)
-
-    for img in list_images:
+    # [print(f'"{a}","{a}","C"') for a in list(model_manager.colors.keys())]
+    for img in tqdm(list_images):
         im = Image.open(img)
 
         centers = generate_centers(im.width, im.height)
@@ -163,10 +198,9 @@ def main():
         for center in map_thumbnails_by_center:
             label = model_manager.predict(map_thumbnails_by_center.get(center))
             centers_with_pred[center] = label
-        
-        vizualize(im, centers_with_pred, model_manager.colors)
+        create_cpc_file(Path(IMAGE_FOLDER_OUTPUT, f"{img.stem}.cpc"), im, img, centers_with_pred)
 
-
+        # vizualize(im, centers_with_pred, model_manager.colors, f"{img.stem}_output.png" )
 
 
 if __name__ == "__main__":
